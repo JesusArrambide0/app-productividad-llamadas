@@ -3,8 +3,8 @@ import streamlit as st
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-# Cargar datos
-df = pd.read_excel("21-25.xlsx", engine="openpyxl")
+archivo_excel = "App Info.xlsx"
+df = pd.read_excel(archivo_excel, engine="openpyxl")
 
 # Normalizar nombres
 mapeo_a_nombre_completo = {
@@ -14,17 +14,25 @@ mapeo_a_nombre_completo = {
 }
 df["Agent Name"] = df["Agent Name"].replace(mapeo_a_nombre_completo)
 
-# Convertir fechas y horas
 df["Call Start Time"] = pd.to_datetime(df["Call Start Time"], errors="coerce")
 df["Talk Time"] = pd.to_timedelta(df["Talk Time"], errors="coerce")
 df["Fecha"] = df["Call Start Time"].dt.date
 df["Hora"] = df["Call Start Time"].dt.hour
-df["DíaSemana"] = df["Call Start Time"].dt.day_name()
+df["DíaSemana_En"] = df["Call Start Time"].dt.day_name()
 
-# Identificar llamadas perdidas
+dias_traducidos = {
+    "Monday": "Lunes",
+    "Tuesday": "Martes",
+    "Wednesday": "Miércoles",
+    "Thursday": "Jueves",
+    "Friday": "Viernes",
+    "Saturday": "Sábado",
+    "Sunday": "Domingo"
+}
+df["DíaSemana"] = df["DíaSemana_En"].map(dias_traducidos)
+
 df["LlamadaPerdida"] = df["Talk Time"] == pd.Timedelta("0:00:00")
 
-# Función para asignar agentes según horario de llamada perdida
 def agentes_por_horario(hora):
     if 8 <= hora < 10:
         return ["Jorge Cesar Flores Rivera"]
@@ -39,7 +47,6 @@ def agentes_por_horario(hora):
     else:
         return []
 
-# Expandir filas por agente asignado en llamadas perdidas
 filas = []
 for _, row in df.iterrows():
     if row["LlamadaPerdida"]:
@@ -48,7 +55,6 @@ for _, row in df.iterrows():
             for agente in agentes:
                 filas.append({**row, "AgenteFinal": agente})
         else:
-            # Si no cae en horario, asignar agente original si existe
             if pd.notna(row["Agent Name"]):
                 filas.append({**row, "AgenteFinal": row["Agent Name"]})
     else:
@@ -58,54 +64,51 @@ for _, row in df.iterrows():
 df_expandido = pd.DataFrame(filas)
 df_expandido = df_expandido[df_expandido["AgenteFinal"].notna()]
 
-# Agrupar por agente y día
-detalle = df_expandido.groupby(["AgenteFinal", "Fecha"]).agg(
+st.title("Análisis Integral de Productividad y Llamadas")
+
+# Filtro global por día (incluye "Todos" para no filtrar)
+opciones_dias = ["Todos"] + list(dias_traducidos.values())
+dia_filtrado = st.selectbox("Filtrar por Día de la Semana:", opciones_dias)
+
+# Filtrar dataframes según día seleccionado
+if dia_filtrado != "Todos":
+    df_filtrado = df[df["DíaSemana"] == dia_filtrado]
+    df_expandido_filtrado = df_expandido[df_expandido["DíaSemana"] == dia_filtrado]
+else:
+    df_filtrado = df.copy()
+    df_expandido_filtrado = df_expandido.copy()
+
+# Recalcular datos con filtro aplicado
+
+detalle = df_expandido_filtrado.groupby(["AgenteFinal", "Fecha"]).agg(
     LlamadasTotales=("Talk Time", "count"),
     LlamadasPerdidas=("LlamadaPerdida", "sum")
 ).reset_index()
 detalle["LlamadasAtendidas"] = detalle["LlamadasTotales"] - detalle["LlamadasPerdidas"]
 detalle["Productividad (%)"] = (detalle["LlamadasAtendidas"] / detalle["LlamadasTotales"] * 100).round(2)
 
-# Resumen diario total (todos)
-resumen_diario_todos = df_expandido.groupby("Fecha").agg(
+resumen_diario_todos = df_expandido_filtrado.groupby("Fecha").agg(
     LlamadasTotales=("Talk Time", "count"),
     LlamadasPerdidas=("LlamadaPerdida", "sum")
 ).reset_index()
 resumen_diario_todos["LlamadasAtendidas"] = resumen_diario_todos["LlamadasTotales"] - resumen_diario_todos["LlamadasPerdidas"]
 resumen_diario_todos["Productividad (%)"] = (resumen_diario_todos["LlamadasAtendidas"] / resumen_diario_todos["LlamadasTotales"] * 100).round(2)
 
-# Heatmap de llamadas por hora y día
-pivot_table = df.pivot_table(index=df["Hora"], columns="DíaSemana", aggfunc="size", fill_value=0)
-# Ordenar días (en inglés)
-dias_ordenados = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-dias_presentes = [dia for dia in dias_ordenados if dia in pivot_table.columns]
-pivot_table = pivot_table[dias_presentes]
-pivot_table.index = [f"{h}:00" for h in pivot_table.index]
-
-# Productividad y tasa de abandono total por día
-df_productividad = df.groupby(df["Call Start Time"].dt.date).agg(
+df_productividad = df_filtrado.groupby(df_filtrado["Call Start Time"].dt.date).agg(
     LlamadasRecibidas=("Talk Time", "count"),
     LlamadasPerdidas=("Talk Time", lambda x: (x == pd.Timedelta("0:00:00")).sum())
-).reset_index()
+).reset_index().rename(columns={"Call Start Time": "Fecha"})
+
 df_productividad["Productividad (%)"] = ((df_productividad["LlamadasRecibidas"] - df_productividad["LlamadasPerdidas"]) / df_productividad["LlamadasRecibidas"] * 100).round(2)
 df_productividad["Tasa de Abandono (%)"] = 100 - df_productividad["Productividad (%)"]
-df_productividad["DíaSemana"] = pd.to_datetime(df_productividad["Call Start Time"]).dt.day_name()
+df_productividad["DíaSemana"] = pd.to_datetime(df_productividad["Fecha"]).dt.day_name().map(dias_traducidos)
 
-# Traducción días al español
-dias_traducidos = {
-    "Monday": "Lunes",
-    "Tuesday": "Martes",
-    "Wednesday": "Miércoles",
-    "Thursday": "Jueves",
-    "Friday": "Viernes",
-    "Saturday": "Sábado",
-    "Sunday": "Domingo"
-}
-df_productividad["DíaSemana"] = df_productividad["DíaSemana"].map(dias_traducidos)
-
-# --- Streamlit UI ---
-
-st.title("Análisis Integral de Productividad y Llamadas")
+# Heatmap
+pivot_table = df_filtrado.pivot_table(index="Hora", columns="DíaSemana_En", aggfunc="size", fill_value=0)
+dias_ordenados_en = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+pivot_table = pivot_table.reindex(columns=dias_ordenados_en, fill_value=0)
+pivot_table.columns = [dias_traducidos[d] for d in pivot_table.columns]
+pivot_table.index = [f"{h}:00" for h in pivot_table.index]
 
 tab1, tab2, tab3, tab4 = st.tabs(["Detalle por Programador", "Resumen Diario Total", "Heatmap Llamadas", "Productividad General"])
 
@@ -121,6 +124,7 @@ with tab2:
 
 with tab3:
     st.header("Distribución de llamadas por hora y día")
+    # Si se quiere, aquí se puede eliminar el filtro de día específico para heatmap
     fig, ax = plt.subplots(figsize=(10, 6))
     sns.heatmap(pivot_table, cmap="YlGnBu", annot=True, fmt="d", ax=ax)
     ax.set_xlabel("Día de la Semana")
@@ -129,5 +133,4 @@ with tab3:
 
 with tab4:
     st.header("Productividad y Tasa de Abandono Diaria")
-    st.dataframe(df_productividad[["Call Start Time", "LlamadasRecibidas", "LlamadasPerdidas", "Productividad (%)", "Tasa de Abandono (%)", "DíaSemana"]].rename(columns={"Call Start Time":"Fecha"}))
-
+    st.dataframe(df_productividad[["Fecha", "LlamadasRecibidas", "LlamadasPerdidas", "Productividad (%)", "Tasa de Abandono (%)", "DíaSemana"]])
